@@ -24,7 +24,7 @@ jobs:
           python3 << 'PYEOF2'
           import json, subprocess, sys, os, time
           REPO = os.environ.get('PACKS_REPO') or ''
-          TAGS = ['packs-v3', 'packs-v2', 'packs-v1']
+          TAGS = ['packs-v4', 'packs-v3', 'packs-v2', 'packs-v1']
           payload = json.load(open('payload.json'))
           pkgs = payload.get('packages') or []
           ok = 0; fail = 0; k_dl = 0; k_up = 0
