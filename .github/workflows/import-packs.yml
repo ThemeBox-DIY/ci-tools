@@ -22,29 +22,52 @@ jobs:
           mkdir -p dl
           printf '%s' "$PAYLOAD" > payload.json
           python3 << 'PYEOF2'
-          import json, subprocess, sys, os, time
+          import json, subprocess, sys, os, time, re
           REPO = os.environ.get('PACKS_REPO') or ''
-          TAGS = ['packs-v4', 'packs-v3', 'packs-v2', 'packs-v1']
           payload = json.load(open('payload.json'))
           pkgs = payload.get('packages') or []
-          ok = 0; fail = 0; k_dl = 0; k_up = 0
-          def upload_gh(pid):
-              last = ''
-              for tag in TAGS:
-                  for attempt in range(5):
-                      r = subprocess.run(['gh','release','upload',tag,'dl/%s.zip'%pid,'--clobber','--repo',REPO],
-                                         capture_output=True, text=True)
-                      if r.returncode == 0:
-                          return True
-                      msg = ((r.stderr or '') + (r.stdout or '')).lower()
-                      if 'file_count limited' in msg:
-                          last = 'full'
-                          break
-                      if 'not found' in msg:
-                          last = 'missing'
-                          break
-                      time.sleep(5 * (attempt + 1))
-              raise RuntimeError(last or 'err')
+          ok = 0; fail = 0; k_dl = 0; k_up = 0; rolled = 0
+          active = [0]
+          def sh(cmd):
+              return subprocess.run(cmd, capture_output=True, text=True)
+          def discover():
+              r = sh(['gh','release','list','--repo',REPO,'--limit','300'])
+              if r.returncode != 0:
+                  return None
+              best = 0
+              for line in (r.stdout or '').splitlines():
+                  p = line.split()
+                  if not p:
+                      continue
+                  m = re.match(r'^packs-v(\d+)$', p[0])
+                  if m:
+                      n = int(m.group(1))
+                      if n > best:
+                          best = n
+              return best if best else None
+          def ensure():
+              if not active[0]:
+                  n = discover()
+                  if not n:
+                      n = 1
+                  active[0] = n
+              return active[0]
+          def upload_once(pid, tag):
+              r = sh(['gh','release','upload',tag,'dl/%s.zip'%pid,'--clobber','--repo',REPO])
+              if r.returncode == 0:
+                  return 'ok'
+              msg = ((r.stderr or '') + (r.stdout or '')).lower()
+              if 'file_count limited' in msg:
+                  return 'full'
+              return 'err'
+          def roll():
+              n = ensure() + 1
+              tag = 'packs-v%d' % n
+              r = sh(['gh','release','create',tag,'--title',tag,'--notes',tag,'--repo',REPO])
+              if r.returncode == 0:
+                  active[0] = n
+                  return True
+              return False
           for p in pkgs:
               pid = p.get('id') or ''
               dl = p.get('dl') or ''
@@ -55,14 +78,29 @@ jobs:
                   if r.returncode != 0:
                       k_dl += 1
                       raise RuntimeError('dlfail')
-                  upload_gh(pid)
+                  done = False
+                  for attempt in range(6):
+                      n = ensure()
+                      tag = 'packs-v%d' % n
+                      res = upload_once(pid, tag)
+                      if res == 'ok':
+                          done = True
+                          break
+                      if res == 'full':
+                          if roll():
+                              rolled += 1
+                              continue
+                          break
+                      time.sleep(5 * (attempt + 1))
+                  if not done:
+                      raise RuntimeError('upfail')
                   ok += 1
               except Exception as e:
                   fail += 1
                   if 'dlfail' not in str(e):
                       k_up += 1
               print('PROGRESS ok=%d fail=%d total=%d' % (ok, fail, len(pkgs)), flush=True)
-          print('DONE ok=%d fail=%d dlfail=%d upfail=%d' % (ok, fail, k_dl, k_up), flush=True)
+          print('DONE ok=%d fail=%d dlfail=%d upfail=%d rolled=%d' % (ok, fail, k_dl, k_up, rolled), flush=True)
           if fail:
               sys.exit(1)
           PYEOF2
