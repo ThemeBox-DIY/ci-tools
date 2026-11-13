@@ -22,28 +22,28 @@ jobs:
           mkdir -p dl
           printf '%s' "$PAYLOAD" > payload.json
           python3 << 'PYEOF2'
-          import json, subprocess, sys, os
+          import json, subprocess, sys, os, time
           REPO = os.environ.get('PACKS_REPO') or ''
-          TAGS = ['packs-v1', 'packs-v2', 'packs-v3']
+          TAGS = ['packs-v3', 'packs-v2', 'packs-v1']
           payload = json.load(open('payload.json'))
           pkgs = payload.get('packages') or []
-          ok = 0; fail = 0
+          ok = 0; fail = 0; k_dl = 0; k_up = 0
           def upload_gh(pid):
               last = ''
               for tag in TAGS:
-                  r = subprocess.run(['gh','release','upload',tag,'dl/%s.zip'%pid,'--clobber','--repo',REPO],
-                                     capture_output=True, text=True)
-                  if r.returncode == 0:
-                      return True
-                  msg = ((r.stderr or '') + (r.stdout or '')).lower()
-                  if 'file_count limited' in msg:
-                      last = 'full'
-                      continue
-                  if 'not found' in msg:
-                      last = 'missing'
-                      continue
-                  last = 'err'
-                  break
+                  for attempt in range(5):
+                      r = subprocess.run(['gh','release','upload',tag,'dl/%s.zip'%pid,'--clobber','--repo',REPO],
+                                         capture_output=True, text=True)
+                      if r.returncode == 0:
+                          return True
+                      msg = ((r.stderr or '') + (r.stdout or '')).lower()
+                      if 'file_count limited' in msg:
+                          last = 'full'
+                          break
+                      if 'not found' in msg:
+                          last = 'missing'
+                          break
+                      time.sleep(5 * (attempt + 1))
               raise RuntimeError(last or 'err')
           for p in pkgs:
               pid = p.get('id') or ''
@@ -51,15 +51,18 @@ jobs:
               try:
                   if not pid or not dl:
                       raise RuntimeError('bad')
-                  r = subprocess.run(['curl','-fsSL','--retry','3','--retry-delay','2','--max-time','300','-o','dl/%s.zip'%pid, dl], capture_output=True, text=True)
+                  r = subprocess.run(['curl','-fsSL','--retry','5','--retry-delay','3','--max-time','300','-o','dl/%s.zip'%pid, dl], capture_output=True, text=True)
                   if r.returncode != 0:
+                      k_dl += 1
                       raise RuntimeError('dlfail')
                   upload_gh(pid)
                   ok += 1
               except Exception as e:
                   fail += 1
+                  if 'dlfail' not in str(e):
+                      k_up += 1
               print('PROGRESS ok=%d fail=%d total=%d' % (ok, fail, len(pkgs)), flush=True)
-          print('DONE ok=%d fail=%d' % (ok, fail), flush=True)
+          print('DONE ok=%d fail=%d dlfail=%d upfail=%d' % (ok, fail, k_dl, k_up), flush=True)
           if fail:
               sys.exit(1)
           PYEOF2
