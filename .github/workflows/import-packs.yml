@@ -61,12 +61,19 @@ jobs:
                   return 'full'
               return 'err'
           def roll():
-              n = ensure() + 1
-              tag = 'packs-v%d' % n
-              r = sh(['gh','release','create',tag,'--title',tag,'--notes',tag,'--repo',REPO])
-              if r.returncode == 0:
-                  active[0] = n
-                  return True
+              for attempt in range(3):
+                  n = ensure() + 1
+                  tag = 'packs-v%d' % n
+                  r = sh(['gh','release','create',tag,'--title',tag,'--notes',tag,'--repo',REPO])
+                  if r.returncode == 0:
+                      active[0] = n
+                      return True
+                  # 并发抢占/预建备用库：重新发现最新分区并直接使用
+                  d = discover()
+                  if d and d > ensure():
+                      active[0] = d
+                      return True
+                  time.sleep(2 * (attempt + 1))
               return False
           for p in pkgs:
               pid = p.get('id') or ''
