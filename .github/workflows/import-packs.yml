@@ -33,6 +33,7 @@ jobs:
           FIKEY = '6d207e02198a847aa98d0a2a901485a5'
 
           payload = json.load(open('payload.json'))
+          used_tags = set()
           pkgs = payload.get('packages') or []
           top_targets = payload.get('targets') or []
           ok = 0; fail = 0; k_dl = 0; k_up = 0; rolled = 0
@@ -185,6 +186,7 @@ jobs:
                           res = upload_once(pid, tag)
                           if res == 'ok':
                               done = True
+                              used_tags.add(tag)
                               break
                           if res == 'full':
                               if roll():
@@ -223,12 +225,34 @@ jobs:
               print('PROGRESS ok=%d fail=%d total=%d %s' % (ok, fail, len(pkgs), ('FAIL ' + pid + ' ' + reason) if reason else ''), flush=True)
 
           try:
-              if ADMIN and shipped_ids:
-                  curl_json('POST', SB + '/functions/v1/tb-api/adm',
-                      {'op': 'verify_assets', 'ids': shipped_ids[:40], 'fresh': True},
-                      {'x-admin-token': ADMIN}, timeout=300)
+              if ADMIN and used_tags:
+                  mnames = []
+                  mids = {}
+                  want = set(x + '.zip' for x in shipped_ids)
+                  for tg in sorted(used_tags):
+                      rr = sh(['gh','api','repos/%s/releases/tags/%s' % (REPO, tg), '--jq', '.id'])
+                      rid = (rr.stdout or '').strip()
+                      if not rid.isdigit():
+                          continue
+                      for pg in range(1, 41):
+                          aa = sh(['gh','api','repos/%s/releases/%s/assets?per_page=100&page=%d' % (REPO, rid, pg), '--jq', '.[] | [.name, (.id|tostring)] | @tsv'])
+                          lines2 = (aa.stdout or '').splitlines()
+                          if not lines2:
+                              break
+                          for line in lines2:
+                              parts = line.split('\t')
+                              if len(parts) == 2 and parts[0] in want:
+                                  mnames.append(parts[0])
+                                  mids[parts[0]] = int(parts[1])
+                          if len(lines2) < 100:
+                              break
+                  if mnames:
+                      codem, bodym = curl_json('POST', SB + '/functions/v1/tb-api/adm',
+                          {'op': 'gh_names_merge', 'names': mnames, 'ids': mids},
+                          {'x-admin-token': ADMIN}, timeout=120)
+                      print('MERGE names=%d tags=%s code=%s' % (len(mnames), ','.join(sorted(used_tags)), codem), flush=True)
           except Exception as e:
-              print('warn: verify skipped: ' + str(e)[:100], flush=True)
+              print('warn: merge skipped: ' + str(e)[:100], flush=True)
 
           print('DONE ok=%d fail=%d dlfail=%d upfail=%d rolled=%d' % (ok, fail, k_dl, k_up, rolled), flush=True)
           for f in fails:
