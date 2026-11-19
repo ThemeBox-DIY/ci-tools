@@ -132,17 +132,21 @@ jobs:
                       return (b, 'webp')
               return None
 
-          def upload_fi(tag_name, data, ext):
+          def upload_cover(tag_name, data, ext, obj_name):
+              # v2: 上传到我们自己的存储桶（tb-packs），返回公共直链
               tmp = '/tmp/' + tag_name + '.' + ext
               open(tmp, 'wb').write(data)
+              ct = {'png': 'image/png', 'jpg': 'image/jpeg', 'webp': 'image/webp'}[ext]
+              url = SB + '/storage/v1/object/tb-packs/' + obj_name
               for att in range(5):
-                  r = sh(['curl','-s','--max-time','180','-X','POST','https://freeimage.host/api/1/upload',
-                          '-F','key='+FIKEY,'-F','format=json','-F','source=@'+tmp])
-                  t = (r.stdout or '').replace('\\/', '/')
-                  m = re.search(r'"url":"([^"]+)"', t)
-                  if m:
-                      return m.group(1)
-                  time.sleep(3 * (att + 1))
+                  r = sh(['curl','-s','--max-time','120','-X','POST', url,
+                          '-H', 'x-upsert: true', '-H', 'Content-Type: ' + ct,
+                          '-H', 'apikey: ' + SVC, '-H', 'Authorization: Bearer ' + SVC,
+                          '--data-binary', '@' + tmp])
+                  t = r.stdout or ''
+                  if '"Key"' in t or '"Id"' in t:
+                      return SB + '/storage/v1/object/public/tb-packs/' + obj_name
+                  time.sleep(2 * (att + 1))
               return ''
 
           def patch_row(pid, kind, cover_url, icon_url):
@@ -195,10 +199,10 @@ jobs:
                       ico = extract_img('dl/%s.zip' % pid, 'icon')
                       if not cov and not ico:
                           raise RuntimeError('nocover')
-                      cov_url = upload_fi(pid + '-cover', cov[0], cov[1]) if cov else ''
-                      ico_url = upload_fi(pid + '-icon', ico[0], ico[1]) if ico else ''
+                      cov_url = upload_cover(pid + '-cover', cov[0], cov[1], 'cov-' + pid + '-cover.' + cov[1]) if cov else ''
+                      ico_url = upload_cover(pid + '-icon', ico[0], ico[1], 'cov-' + pid + '-icon.' + ico[1]) if ico else ''
                       if not cov_url and not ico_url:
-                          raise RuntimeError('fi-fail')
+                          raise RuntimeError('cover-up-fail')
                       final_cover = cov_url or ico_url
                       final_icon = ico_url or cov_url
                       okp, code, body = patch_row(pid, kind, final_cover, final_icon)
