@@ -41,6 +41,9 @@ jobs:
             node prep_bundle.js
           elif [ "$MODE" = "drive" ]; then
             node drive_bundle.js
+          elif [ "$MODE" = "shrink" ]; then
+            python3 -m pip install --quiet --disable-pip-version-check pillow 2>/dev/null || true
+            python3 shrink_bundle.py
           else
             echo "unknown mode: $MODE"
             exit 1
