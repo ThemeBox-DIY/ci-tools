@@ -175,7 +175,7 @@ jobs:
               url = SB + '/storage/v1/object/tb-packs/' + obj_name
               for att in range(5):
                   r = sh(['curl','-s','--max-time','120','-X','POST', url,
-                          '-H', 'x-upsert: true', '-H', 'Content-Type: ' + ct,
+                          '-H', 'x-upsert: true', '-H', 'cache-control: public, max-age=604800', '-H', 'Content-Type: ' + ct,
                           '-H', 'apikey: ' + SVC, '-H', 'Authorization: Bearer ' + SVC,
                           '--data-binary', '@' + tmp])
                   t = r.stdout or ''
