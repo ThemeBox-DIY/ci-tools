@@ -23,8 +23,9 @@ jobs:
           set -euo pipefail
           mkdir -p dl
           printf '%s' "$PAYLOAD" > payload.json
+          python3 -m pip install --quiet --disable-pip-version-check pillow 2>/dev/null || true
           python3 << 'PYEOF2'
-          import json, subprocess, sys, os, time, re, zipfile
+          import json, subprocess, sys, os, time, re, zipfile, io
 
           REPO = os.environ.get('PACKS_REPO') or ''
           SB = 'https://rkhdkoewhwjtzxpjpjim.supabase.co'
@@ -133,8 +134,41 @@ jobs:
                       return (b, 'webp')
               return None
 
+          def compress_img(data, ext, max_dim):
+              # v3(存控): 上传前等比压缩——封面≤640px / 图标≤320px；PNG 优化，必要时 256 色
+              try:
+                  from PIL import Image
+                  im = Image.open(io.BytesIO(data))
+                  w, h = im.size
+                  if max(w, h) > max_dim:
+                      sc = max_dim / float(max(w, h))
+                      im = im.resize((max(1, int(w * sc)), max(1, int(h * sc))), Image.LANCZOS)
+                  out = io.BytesIO()
+                  if ext == 'jpg':
+                      im.convert('RGB').save(out, 'JPEG', quality=84, optimize=True)
+                  elif ext == 'webp':
+                      im.save(out, 'WEBP', quality=80, method=4)
+                  else:
+                      im.save(out, 'PNG', optimize=True)
+                      if out.tell() > 70000:
+                          try:
+                              q = im.quantize(colors=256) if im.mode in ('RGB', 'RGBA', 'L', 'LA') else im
+                              o2 = io.BytesIO()
+                              q.save(o2, 'PNG', optimize=True)
+                              if o2.tell() < out.tell():
+                                  out = o2
+                          except Exception:
+                              pass
+                  nb = out.getvalue()
+                  return nb if 0 < len(nb) < len(data) else data
+              except Exception as e_:
+                  print('compress skip: ' + str(e_)[:80], flush=True)
+                  return data
+
           def upload_cover(tag_name, data, ext, obj_name):
               # v2: 上传到我们自己的存储桶（tb-packs），返回公共直链
+              # v3(存控): 上传前压缩
+              data = compress_img(data, ext, 320 if '-icon.' in obj_name else 640)
               tmp = '/tmp/' + tag_name + '.' + ext
               open(tmp, 'wb').write(data)
               ct = {'png': 'image/png', 'jpg': 'image/jpeg', 'webp': 'image/webp'}[ext]
