@@ -1,0 +1,47 @@
+name: box-sync
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'pipeline mode'
+        required: true
+        default: 'prep'
+      note:
+        description: 'note'
+        required: false
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Run pipeline
+        env:
+          SB_SVC: ${{ secrets.SB_SVC }}
+          TB_ADMIN_TOKEN: ${{ secrets.TB_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ secrets.PACKS_PAT }}
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p boxwork && cd boxwork
+          SB="https://rkhdkoewhwjtzxpjpjim.supabase.co"
+          curl -sf "$SB/rest/v1/tb_cache?k=eq.boxpipe%3Aassets%3Av1&select=v" \
+            -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC" -o assets.json
+          python3 <<'PY'
+          import json, base64
+          rows = json.load(open('assets.json'))
+          files = rows[0]['v']['files']
+          for name, b64 in files.items():
+              open(name, 'wb').write(base64.b64decode(b64))
+              print('wrote', name)
+          PY
+          echo "mode=$MODE"
+          if [ "$MODE" = "prep" ]; then
+            node prep_bundle.js
+          elif [ "$MODE" = "drive" ]; then
+            node drive_bundle.js
+          else
+            echo "unknown mode: $MODE"
+            exit 1
+          fi
