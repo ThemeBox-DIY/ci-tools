@@ -1,21 +1,25 @@
 name: probe-m
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
 jobs:
   p:
     runs-on: ubuntu-latest
     steps:
       - name: probe
+        env:
+          GH_TOKEN: ${{ secrets.PACKS_PAT }}
         run: |
+          set -x
           U="https://github.com/ThemeBox-DIY/themebox-packs/releases/download/packs-v99/QWDce7afa34d.zip"
-          echo "== no auth =="
-          curl -s -o /dev/null -w "%{http_code}
-" -r -1024 "$U"
-          echo "== with auth + range =="
-          curl -sL -o /tmp/x.bin -w "%{http_code} | %{size_download}B
-" -H "Authorization: token ${{ secrets.PACKS_PAT }}" -r -262144 "$U"
-          head -c 4 /tmp/x.bin | xxd | head -1
-          echo "== api asset endpoint =="
-          curl -sL -o /tmp/y.bin -w "%{http_code} | %{size_download}B
-" -H "Authorization: token ${{ secrets.PACKS_PAT }}" -H "Accept: application/octet-stream" -r -262144 "https://api.github.com/repos/ThemeBox-DIY/themebox-packs/releases/assets/757495096"
-          head -c 4 /tmp/y.bin | xxd | head -1
+          echo "== A: no auth =="
+          curl -s -o /dev/null -w "A:%{http_code}\n" -r -1024 "$U" || true
+          echo "== B: browser url + auth + range =="
+          curl -sL -o /tmp/x.bin -w "B:%{http_code} %{size_download}B\n" -H "Authorization: token ${GH_TOKEN}" -r -262144 "$U" || true
+          head -c 4 /tmp/x.bin | xxd | head -1 || true
+          echo "== C: api asset endpoint + auth =="
+          curl -sL -o /tmp/y.bin -w "C:%{http_code} %{size_download}B\n" -H "Authorization: token ${GH_TOKEN}" -H "Accept: application/octet-stream" -r -262144 "https://api.github.com/repos/ThemeBox-DIY/themebox-packs/releases/assets/757495096" || true
+          head -c 4 /tmp/y.bin | xxd | head -1 || true
+          echo "== D: gh release download =="
+          gh release download packs-v99 -p "QWDce7afa34d.zip" -D /tmp/ghdl -R ThemeBox-DIY/themebox-packs --clobber 2>&1 | tail -2 || true
+          ls -la /tmp/ghdl 2>/dev/null || true
+          head -c 4 /tmp/ghdl/QWDce7afa34d.zip 2>/dev/null | xxd | head -1 || true
