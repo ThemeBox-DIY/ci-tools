@@ -28,7 +28,7 @@ jobs:
           import json, subprocess, sys, os, time, re, zipfile, io
 
           REPO = os.environ.get('PACKS_REPO') or ''
-          SB = 'https://rkhdkoewhwjtzxpjpjim.supabase.co'
+          SB = 'https://efvtmwcyoskqqivworcg.supabase.co'
           SVC = os.environ.get('SB_SVC') or ''
           ADMIN = os.environ.get('TB_ADMIN_TOKEN') or ''
           FIKEY = '6d207e02198a847aa98d0a2a901485a5'
@@ -166,21 +166,34 @@ jobs:
                   return data
 
           def upload_cover(tag_name, data, ext, obj_name):
-              # v2: 上传到我们自己的存储桶（tb-packs），返回公共直链
-              # v3(存控): 上传前压缩
+              # v4(新世界): 直推 GitHub tb-covers 仓（jsDelivr gcore 直链），不再用 Supabase 存储
+              import base64 as _b64
               data = compress_img(data, ext, 320 if '-icon.' in obj_name else 640)
-              tmp = '/tmp/' + tag_name + '.' + ext
-              open(tmp, 'wb').write(data)
-              ct = {'png': 'image/png', 'jpg': 'image/jpeg', 'webp': 'image/webp'}[ext]
-              url = SB + '/storage/v1/object/tb-packs/' + obj_name
+              api = 'https://api.github.com/repos/ThemeBox-DIY/tb-covers/contents/' + obj_name
+              auth = 'Authorization: token ' + (os.environ.get('GH_TOKEN') or '')
+              body = json.dumps({'message': 'cover ' + obj_name, 'content': _b64.b64encode(data).decode(), 'branch': 'main'})
+              sha = None
               for att in range(5):
-                  r = sh(['curl','-s','--max-time','120','-X','POST', url,
-                          '-H', 'x-upsert: true', '-H', 'cache-control: public, max-age=604800', '-H', 'Content-Type: ' + ct,
-                          '-H', 'apikey: ' + SVC, '-H', 'Authorization: Bearer ' + SVC,
-                          '--data-binary', '@' + tmp])
+                  r = sh(['curl','-s','--max-time','120','-X','PUT', api,
+                          '-H', auth, '-H', 'User-Agent: ci-tools', '-H', 'Content-Type: application/json',
+                          '-d', body])
                   t = r.stdout or ''
-                  if '"Key"' in t or '"Id"' in t:
-                      return SB + '/storage/v1/object/public/tb-packs/' + obj_name
+                  if '"content"' in t:
+                      if att > 0:
+                          try:
+                              sh(['curl','-s','--max-time','30', 'https://purge.jsdelivr.net/gh/ThemeBox-DIY/tb-covers@main/' + obj_name])
+                          except Exception:
+                              pass
+                      return 'https://gcore.jsdelivr.net/gh/ThemeBox-DIY/tb-covers@main/' + obj_name
+                  if sha is None and ('sha' in t or 'already exists' in t):
+                      g = sh(['curl','-s','--max-time','60', 'https://api.github.com/repos/ThemeBox-DIY/tb-covers/contents/' + obj_name,
+                              '-H', auth, '-H', 'User-Agent: ci-tools'])
+                      try:
+                          sha = json.loads(g.stdout).get('sha')
+                          if sha:
+                              body = json.dumps({'message': 'cover update ' + obj_name, 'content': _b64.b64encode(data).decode(), 'branch': 'main', 'sha': sha})
+                      except Exception:
+                          sha = None
                   time.sleep(2 * (att + 1))
               return ''
 
