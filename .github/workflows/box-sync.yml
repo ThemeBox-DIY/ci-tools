@@ -44,6 +44,11 @@ jobs:
           elif [ "$MODE" = "shrink" ]; then
             python3 -m pip install --quiet --disable-pip-version-check pillow 2>/dev/null || true
             python3 shrink_bundle.py
+          elif [ "$MODE" = "covmig" ]; then
+            python3 -m pip install --quiet --disable-pip-version-check pillow 2>/dev/null || true
+            git config --global user.email "ci@tb"
+            git config --global user.name "ci"
+            python3 covmig_bundle.py
           else
             echo "unknown mode: $MODE"
             exit 1
