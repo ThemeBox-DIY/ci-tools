@@ -223,9 +223,9 @@ jobs:
                       raise RuntimeError('bad-id')
                   if dl:
                       confp = 'dl/%s.conf' % pid
-                    _cu = dl.replace('\\', '\\\\').replace('"', '\\"')
-                    open(confp, 'w').write('url = "%s"\noutput = "dl/%s.zip"\n' % (_cu, pid))
-                    r = subprocess.run(['curl','-fsSL','--retry','5','--retry-delay','3','--max-time','300','-K',confp], capture_output=True, text=True)
+                      _cu = dl.replace(chr(92), chr(92)*2).replace('"', chr(92)+'"')
+                      open(confp, 'w').write('url = "%s"\noutput = "dl/%s.zip"\n' % (_cu, pid))
+                      r = subprocess.run(['curl','-fsSL','--retry','5','--retry-delay','3','--max-time','300','-K',confp], capture_output=True, text=True)
                       if r.returncode != 0:
                           k_dl += 1
                           raise RuntimeError('dlfail')
