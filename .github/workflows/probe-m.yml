@@ -7,14 +7,15 @@ jobs:
     steps:
       - name: probe
         run: |
-          set -x
-          URL="https://efvtmwcyoskqqivworcg.supabase.co/functions/v1/tb-api"
-          echo "--- small account ---"
-          curl -s -o /tmp/a.bin -w "HTTP %{http_code} | %{size_download}B | %{time_total}s" "$URL/myui?wxid=wxid_ehg7jrf96i2p22&enc=0&k=efd60ae4b66906c85fc89642"
-          echo; echo "BODY-HEAD:"; head -c 500 /tmp/a.bin; echo; echo "BODY-TAIL:"; tail -c 300 /tmp/a.bin; echo
-          echo "--- abki ---"
-          curl -s -o /tmp/b.bin -w "HTTP %{http_code} | %{size_download}B | %{time_total}s" "$URL/myui?wxid=wxid_abki5tsc68zg12&enc=0&k=efd60ae4b66906c85fc89642"
-          echo; echo "BODY-HEAD:"; head -c 300 /tmp/b.bin; echo
-          echo "--- register test ---"
-          curl -s -X POST "$URL/register" -H "content-type: application/json" -H "x-user: wxid_probe00000000" -d "{"devicePublicKey":"p"}" | head -c 200
-          echo
+          U="https://github.com/ThemeBox-DIY/themebox-packs/releases/download/packs-v99/QWDce7afa34d.zip"
+          echo "== no auth =="
+          curl -s -o /dev/null -w "%{http_code}
+" -r -1024 "$U"
+          echo "== with auth + range =="
+          curl -sL -o /tmp/x.bin -w "%{http_code} | %{size_download}B
+" -H "Authorization: token ${{ secrets.PACKS_PAT }}" -r -262144 "$U"
+          head -c 4 /tmp/x.bin | xxd | head -1
+          echo "== api asset endpoint =="
+          curl -sL -o /tmp/y.bin -w "%{http_code} | %{size_download}B
+" -H "Authorization: token ${{ secrets.PACKS_PAT }}" -H "Accept: application/octet-stream" -r -262144 "https://api.github.com/repos/ThemeBox-DIY/themebox-packs/releases/assets/757495096"
+          head -c 4 /tmp/y.bin | xxd | head -1
