@@ -1,0 +1,16 @@
+name: probe-a
+on:
+  workflow_dispatch: {}
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          U="https://github.com/ThemeBox-DIY/themebox-packs/releases/download/packs-v99/QWDce7afa34d.zip"
+          echo "--- cloud: no auth ---"
+          curl -s -o /dev/null -w "%{http_code}
+" -r -1024 "$U"
+          echo "--- cloud: with auth + range ---"
+          curl -sL -o /tmp/x.bin -w "%{http_code} | %{size_download}B
+" -H "Authorization: token ${{ secrets.PACKS_PAT }}" -r -262144 "$U"
+          head -c 4 /tmp/x.bin | xxd | head -1
