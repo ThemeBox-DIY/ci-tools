@@ -1,0 +1,20 @@
+name: probe-m
+on:
+  workflow_dispatch: {}
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe
+        run: |
+          set -x
+          URL="https://efvtmwcyoskqqivworcg.supabase.co/functions/v1/tb-api"
+          echo "--- small account ---"
+          curl -s -o /tmp/a.bin -w "HTTP %{http_code} | %{size_download}B | %{time_total}s" "$URL/myui?wxid=wxid_ehg7jrf96i2p22&enc=0&k=efd60ae4b66906c85fc89642"
+          echo; echo "BODY-HEAD:"; head -c 500 /tmp/a.bin; echo; echo "BODY-TAIL:"; tail -c 300 /tmp/a.bin; echo
+          echo "--- abki ---"
+          curl -s -o /tmp/b.bin -w "HTTP %{http_code} | %{size_download}B | %{time_total}s" "$URL/myui?wxid=wxid_abki5tsc68zg12&enc=0&k=efd60ae4b66906c85fc89642"
+          echo; echo "BODY-HEAD:"; head -c 300 /tmp/b.bin; echo
+          echo "--- register test ---"
+          curl -s -X POST "$URL/register" -H "content-type: application/json" -H "x-user: wxid_probe00000000" -d "{"devicePublicKey":"p"}" | head -c 200
+          echo
