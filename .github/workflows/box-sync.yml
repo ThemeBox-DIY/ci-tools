@@ -16,11 +16,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     steps:
+      - name: GitHub App token
+        env:
+          FALLBACK_PAT: ${{ secrets.PACKS_PAT }}
+          SB_SVC: ${{ secrets.SB_SVC }}
+        run: |
+          set -uo pipefail
+          SB="https://efvtmwcyoskqqivworcg.supabase.co"
+          CREDS=$(curl -s "$SB/rest/v1/tb_cache?k=eq.ghapp%3Acreds&select=v" -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC")
+          APP_ID=$(echo "$CREDS" | jq -r '.[0].v.id')
+          IID=$(echo "$CREDS" | jq -r '.[0].v.iid // empty')
+          echo "$CREDS" | jq -r '.[0].v.pem' > /tmp/app.pem 2>/dev/null || true
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          NOW=$(date +%s)
+          HDR=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+          PAY=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((NOW-30)) $((NOW+540)) "$APP_ID" | b64url)
+          SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign /tmp/app.pem | b64url)
+          JWT="$HDR.$PAY.$SIG"
+          if [ -z "$IID" ] || [ "$IID" = "null" ]; then
+            IID=$(curl -s -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" https://api.github.com/app/installations | jq -r '.[0].id')
+          fi
+          TOK=$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" "https://api.github.com/app/installations/$IID/access_tokens" | jq -r '.token')
+          if [ -n "$TOK" ] && [ "$TOK" != "null" ]; then
+            echo "GH_TOKEN=$TOK" >> $GITHUB_ENV
+            echo "APP-TOKEN-OK"
+          else
+            echo "GH_TOKEN=$FALLBACK_PAT" >> $GITHUB_ENV
+            echo "APP-TOKEN-FALLBACK-PAT"
+          fi
       - name: Run pipeline
         env:
           SB_SVC: ${{ secrets.SB_SVC }}
           TB_ADMIN_TOKEN: ${{ secrets.TB_ADMIN_TOKEN }}
-          GH_TOKEN: ${{ secrets.PACKS_PAT }}
           MODE: ${{ github.event.inputs.mode }}
         run: |
           set -euo pipefail
