@@ -116,8 +116,10 @@ jobs:
               for b in BASES:
                   try:
                       r = requests.get(b + path, headers=RUA, timeout=40)
-                      if r.status_code == 200 and len(r.content) >= 500 and r.content[:2] not in (b'<!', b'{'):
-                          return r.content
+                      c = r.content
+                      magick = (c[:8] == b'\x89PNG\r\n\x1a\n') or (c[:2] == b'\xff\xd8') or (c[:4] == b'GIF8') or (c[:4] == b'RIFF')
+                      if r.status_code == 200 and magick:
+                          return c
                   except Exception:
                       pass
                   time.sleep(0.4)
