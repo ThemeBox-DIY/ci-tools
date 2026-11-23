@@ -1,0 +1,232 @@
+name: wx-covers
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'max uploads this run'
+        required: false
+        default: '2200'
+      dry:
+        description: '1 = dry run (no upload)'
+        required: false
+        default: '0'
+  schedule:
+    - cron: '10 16 * * *'
+concurrency:
+  group: wx-covers
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Setup
+        run: python3 -m pip install --quiet --disable-pip-version-check requests pillow 2>/dev/null || true
+      - name: Upload covers to WeChat
+        env:
+          SB_SVC: ${{ secrets.SB_SVC }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIMIT: ${{ github.event.inputs.limit || '2200' }}
+          DRY: ${{ github.event.inputs.dry || '0' }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, re, io, time, threading
+          import requests
+          from concurrent.futures import ThreadPoolExecutor
+
+          SB = 'https://efvtmwcyoskqqivworcg.supabase.co'
+          SVC = os.environ['SB_SVC']
+          GHT = os.environ.get('GH_TOKEN') or ''
+          LIMIT = int(os.environ.get('LIMIT') or '2200')
+          DRY = (os.environ.get('DRY') or '0') == '1'
+          WORKER = 'https://floral-queen-7e7a.clp1015.workers.dev'
+          BASES = ['https://testingcf.jsdelivr.net/gh/ThemeBox-DIY/tb-covers@main/',
+                   'https://gcore.jsdelivr.net/gh/ThemeBox-DIY/tb-covers@main/']
+          UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
+          RUA = {'User-Agent': 'wx-covers-ci'}
+
+          def rest(path, method='GET', body=None, prefer=None):
+              h = {'apikey': SVC, 'Authorization': 'Bearer ' + SVC, 'Content-Type': 'application/json'}
+              if prefer: h['Prefer'] = prefer
+              for att in range(4):
+                  try:
+                      r = requests.request(method, SB + '/rest/v1/' + path, headers=h,
+                                           data=json.dumps(body) if body is not None else None, timeout=60)
+                      if r.status_code < 300:
+                          return json.loads(r.text) if r.text.strip() else []
+                      print('  [REST] %s %s -> %s' % (method, path[:70], r.status_code))
+                      if r.status_code in (429, 500, 502, 503):
+                          time.sleep(5); continue
+                      return None
+                  except Exception:
+                      time.sleep(4)
+              return None
+
+          _tok = {'v': '', 'at': 0.0}
+          def get_token(force=False):
+              if not force and _tok['v'] and time.time() - _tok['at'] < 5400:
+                  return _tok['v']
+              for att in range(4):
+                  try:
+                      r = requests.get(WORKER, headers={'User-Agent': UA}, timeout=40)
+                      j = r.json()
+                      if j.get('access_token'):
+                          _tok['v'] = j['access_token']; _tok['at'] = time.time()
+                          print('token ok (%d chars)' % len(_tok['v'])); return _tok['v']
+                  except Exception as e:
+                      time.sleep(4)
+              print('!! worker token failed'); return ''
+
+          def fetch_tree():
+              h = {'Authorization': 'Bearer ' + GHT, 'User-Agent': 'wx-covers-ci', 'Accept': 'application/vnd.github+json'}
+              r = requests.get('https://api.github.com/repos/ThemeBox-DIY/tb-covers/git/trees/main?recursive=1', headers=h, timeout=180)
+              d = r.json(); out = {}; n = 0
+              for x in d.get('tree') or []:
+                  if x.get('type') != 'blob': continue
+                  n += 1
+                  m = re.match(r'^cov-([A-Za-z0-9]+)-(cover|icon)\.(png|jpg|jpeg|webp|gif)$', x['path'])
+                  if m: out.setdefault(m.group(1), {})[m.group(2)] = x['path']
+              print('tree: %d ids / %d files' % (len(out), n)); return out
+
+          def fetch_pending():
+              rows = []
+              for tbl, idc in (('tb_themes', 'theme_id'), ('tb_bubbles', 'bubble_id')):
+                  for filt in ('cover_url=not.like.*mmbiz*', 'cover_url=is.null'):
+                      off = 0
+                      while True:
+                          q = '%s?select=%s,auth,cover_url,cover_url_old,icon_url,icon_url_old,name&%s&limit=1000&offset=%d' % (tbl, idc, filt, off)
+                          r = rest(q)
+                          if r is None: break
+                          rows.extend([dict(x, _tbl=tbl, _idc=idc) for x in r])
+                          if len(r) < 1000: break
+                          off += 1000
+              return rows
+
+          T1 = re.compile('迈布気雄兆|大岛|美化鸭')
+          T2 = re.compile('橘纸叔叔|苏轼爱吃肉')
+          def tier(a):
+              s = a or ''
+              if T1.search(s): return 1
+              if T2.search(s) or s.strip() == 'SF': return 2
+              return 3
+
+          def dl(path):
+              for b in BASES:
+                  try:
+                      r = requests.get(b + path, headers=RUA, timeout=40)
+                      if r.status_code == 200 and len(r.content) >= 500 and r.content[:2] not in (b'<!', b'{'):
+                          return r.content
+                  except Exception:
+                      pass
+                  time.sleep(0.4)
+              return None
+
+          MIME = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
+          def fix_webp(data, path):
+              if not path.lower().endswith('.webp'): return data, path
+              try:
+                  from PIL import Image
+                  im = Image.open(io.BytesIO(data))
+                  buf = io.BytesIO(); im.save(buf, 'PNG')
+                  return buf.getvalue(), path[:-5] + '.png'
+              except Exception:
+                  return None, path
+
+          def upload(tok, ch, path, data, tag):
+              ep = ('https://api.weixin.qq.com/cgi-bin/media/uploadimg?access_token=%s' % tok) if ch == 'img' else ('https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=%s&type=image' % tok)
+              ext = os.path.splitext(path)[1].lower() or '.png'
+              try:
+                  r = requests.post(ep, files={'media': ('f' + ext, data, MIME.get(ext, 'image/png'))}, timeout=60)
+                  return r.json()
+              except Exception as e:
+                  return {'errcode': None, 'errmsg': str(e)[:80]}
+
+          def main():
+              tok = get_token()
+              if not tok:
+                  print('FATAL: no token'); return
+              tree = fetch_tree()
+              pend = fetch_pending()
+              print('pending rows: %d' % len(pend))
+              todo = []
+              nofile = 0
+              for x in pend:
+                  k = tree.get(x[x['_idc']])
+                  if not k: nofile += 1; continue
+                  fp = k.get('cover') or k.get('icon')
+                  if not fp: nofile += 1; continue
+                  x['_fp'] = fp
+                  todo.append(x)
+              todo.sort(key=lambda x: (tier(x.get('auth')), x[x['_idc']]))
+              done_cnt = {}
+              for x in todo:
+                  t = tier(x.get('auth'))
+                  done_cnt[t] = done_cnt.get(t, 0) + 1
+              print('todo with files: %d (tier1=%d tier2=%d tier3=%d) | nofile-skip=%d' % (len(todo), done_cnt.get(1,0), done_cnt.get(2,0), done_cnt.get(3,0), nofile))
+              todo = todo[:LIMIT]
+              print('this run: %d (limit=%d dry=%s)' % (len(todo), LIMIT, DRY))
+              if DRY:
+                  for x in todo[:5]: print('  dry:', x[x['_idc']], '|', x.get('auth'), '|', x['_fp'])
+                  return
+              st = {'ok': 0, 'fail': 0, 'skip': 0, 'bad': 0}
+              quota = {'img': False, 'mat': False}
+              lock = threading.Lock()
+              tk_h = {'v': tok}
+              def one(x):
+                  if quota['img'] and quota['mat']: return
+                  iid = x[x['_idc']]; tbl = x['_tbl']; idc = x['_idc']
+                  data = dl(x['_fp'])
+                  if data is None:
+                      with lock: st['skip'] += 1
+                      return
+                  data, path2 = fix_webp(data, x['_fp'])
+                  if data is None:
+                      with lock: st['bad'] += 1
+                      return
+                  for att in range(8):
+                      if quota['img'] and quota['mat']: return
+                      ch = 'img' if not quota['img'] else 'mat'
+                      if ch == 'img' and quota['img']: ch = 'mat'
+                      if ch == 'mat' and quota['mat']: ch = 'img'
+                      tk = tk_h['v'] or get_token()
+                      if not tk:
+                          time.sleep(5); continue
+                      d = upload(tk, ch, path2, data, iid)
+                      err = d.get('errcode')
+                      if 'url' in d:
+                          mu = d['url'].replace('http://', 'https://')
+                          upd = {'cover_url': mu, 'icon_url': mu}
+                          oc = x.get('cover_url') or ''
+                          oi = x.get('icon_url') or ''
+                          if oc and not (x.get('cover_url_old') or ''): upd['cover_url_old'] = oc
+                          if oi and not (x.get('icon_url_old') or ''): upd['icon_url_old'] = oi
+                          rest('%s?%s=eq.%s' % (tbl, idc, iid), 'PATCH', upd, prefer='return=minimal')
+                          with lock:
+                              st['ok'] += 1
+                              if st['ok'] % 25 == 0: print('ok=%d fail=%d skip=%d bad=%d' % (st['ok'], st['fail'], st['skip'], st['bad']))
+                          return
+                      if err == 45009:
+                          if ch == 'img': quota['img'] = True; print('img quota out -> mat')
+                          else: quota['mat'] = True; print('mat quota out -> img')
+                          continue
+                      if err in (40001, 42001, 40014):
+                          tk_h['v'] = get_token(force=True); time.sleep(2); continue
+                      if err in (45002, 45011, -1, None):
+                          time.sleep(3 + att * 3); continue
+                      with lock:
+                          st['fail'] += 1
+                          if st['fail'] <= 12: print('  fail', iid, str(d)[:130])
+                      return
+                  with lock: st['fail'] += 1
+              with ThreadPoolExecutor(4) as ex:
+                  list(ex.map(one, todo))
+              print('DONE ok=%d fail=%d skip=%d bad=%d | quota img_dead=%s mat_dead=%s' % (st['ok'], st['fail'], st['skip'], st['bad'], quota['img'], quota['mat']))
+              try:
+                  rest('tb_cache?on_conflict=k', 'POST', {'k': 'wxmig:cloud:last', 'v': {'ok': st['ok'], 'fail': st['fail'], 'skip': st['skip'], 'bad': st['bad'], 'img_dead': quota['img'], 'mat_dead': quota['mat'], 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}}, prefer='resolution=merge-duplicates')
+              except Exception:
+                  pass
+
+          main()
+          PYEOF
