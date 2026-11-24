@@ -1,0 +1,323 @@
+name: covfix
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: 'note'
+        required: false
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: GitHub App token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PEM: ${{ secrets.APP_PEM }}
+          FALLBACK_PAT: ${{ secrets.PACKS_PAT }}
+        run: |
+          set -uo pipefail
+          printf '%s' "$APP_PEM" > /tmp/app.pem
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          NOW=$(date +%s)
+          HDR=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+          PAY=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((NOW-30)) $((NOW+540)) "$APP_ID" | b64url)
+          SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign /tmp/app.pem | b64url)
+          JWT="$HDR.$PAY.$SIG"
+          IID=$(curl -s -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" https://api.github.com/app/installations | jq -r '.[0].id')
+          TOK=$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" "https://api.github.com/app/installations/$IID/access_tokens" | jq -r '.token')
+          if [ -n "$TOK" ] && [ "$TOK" != "null" ]; then
+            echo "GH_TOKEN=$TOK" >> $GITHUB_ENV
+            echo "APP-TOKEN-OK"
+          else
+            echo "GH_TOKEN=$FALLBACK_PAT" >> $GITHUB_ENV
+            echo "APP-TOKEN-FALLBACK"
+          fi
+      - name: Backfill covers
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pillow
+          git config --global user.email "ci@tb"
+          git config --global user.name "ci"
+          python3 <<'PYEOF'
+          #!/usr/bin/env python3
+          # -*- coding: utf-8 -*-
+          """covmig7 — 封面补提取（宽松版·纯 GitHub）：
+          清单直接从 GitHub Releases 枚举（不读 Supabase）；进度写仓库文件（不写 Supabase）。
+          断点续传 → gh 分组下载 → 宽松提取（cover>icon>任意图）→ 推 tb-covers。
+          """
+          import os, io, json, time, subprocess, shutil, zipfile, threading
+          from collections import defaultdict
+          from concurrent.futures import ThreadPoolExecutor
+
+          GH = os.environ.get('GH_TOKEN') or ''
+          REPO = 'ThemeBox-DIY/themebox-packs'
+          COVREPO = 'ThemeBox-DIY/tb-covers'
+          WORK = os.path.join(os.getcwd(), 'covmig7_work')
+          OUT = os.path.join(WORK, 'out')
+          DL = os.path.join(WORK, 'dl')
+          os.makedirs(OUT, exist_ok=True)
+          os.makedirs(DL, exist_ok=True)
+
+
+          def log(*a):
+              print('[%s]' % time.strftime('%H:%M:%S'), *a, flush=True)
+
+
+          def api_get(url, timeout=120):
+              import urllib.request
+              for att in range(3):
+                  try:
+                      req = urllib.request.Request(url, headers={'Authorization': 'token ' + GH, 'User-Agent': 'covmig7', 'Accept': 'application/vnd.github+json'})
+                      return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+                  except Exception as e:
+                      if att == 2:
+                          raise
+                      time.sleep(2 * (att + 1))
+
+
+          def build_tag_map():
+              m = {}
+              for page in range(1, 8):
+                  rels = api_get('https://api.github.com/repos/%s/releases?per_page=100&page=%d' % (REPO, page))
+                  if not rels:
+                      break
+                  for R in rels:
+                      for a in (R.get('assets') or []):
+                          m[a['name']] = R['tag_name']
+                  if len(rels) < 100:
+                      break
+              return m
+
+
+          def gh_dl_group(tag, names):
+              cmd = ['gh', 'release', 'download', tag, '-D', DL, '-R', REPO, '--clobber']
+              for nm in names:
+                  cmd += ['-p', nm]
+              for att in range(3):
+                  subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, GH_TOKEN=GH))
+                  got = [os.path.join(DL, nm) for nm in names if os.path.exists(os.path.join(DL, nm)) and os.path.getsize(os.path.join(DL, nm)) > 100]
+                  missing = [nm for nm in names if not (os.path.exists(os.path.join(DL, nm)) and os.path.getsize(os.path.join(DL, nm)) > 100)]
+                  if got:
+                      return got, missing
+                  time.sleep(2 * (att + 1))
+              return [], names
+
+
+          def extract_cands(zpath):
+              """宽松扫描：任意图片文件；排序 cover.* > icon.* > 其他，同级按体积从大到小"""
+              try:
+                  z = zipfile.ZipFile(zpath)
+              except Exception:
+                  return []
+              out = []
+              for n in z.namelist():
+                  low = n.lower()
+                  ext = None
+                  if low.endswith('.png'):
+                      ext = 'png'
+                  elif low.endswith('.jpg') or low.endswith('.jpeg'):
+                      ext = 'jpg'
+                  elif low.endswith('.webp'):
+                      ext = 'webp'
+                  if not ext:
+                      continue
+                  try:
+                      b = z.read(n)
+                  except Exception:
+                      continue
+                  if len(b) < 120:
+                      continue
+                  if not (b[:8] == b'\x89PNG\r\n\x1a\n' or b[:2] == b'\xff\xd8' or (b[:4] == b'RIFF' and b[8:12] == b'WEBP')):
+                      continue
+                  base = low.split('/')[-1]
+                  if base.startswith('cover'):
+                      rank = 0
+                  elif base.startswith('icon'):
+                      rank = 1
+                  else:
+                      rank = 2
+                  out.append((rank, -len(b), n, b, ext))
+              out.sort()
+              return out
+
+
+          def compress(data, ext, max_dim):
+              from PIL import Image
+              im = Image.open(io.BytesIO(data))
+              w, h = im.size
+              if max(w, h) > max_dim:
+                  sc = max_dim / float(max(w, h))
+                  im = im.resize((max(1, int(w * sc)), max(1, int(h * sc))), Image.LANCZOS)
+              out = io.BytesIO()
+              if ext == 'jpg':
+                  im.convert('RGB').save(out, 'JPEG', quality=84, optimize=True)
+              elif ext == 'webp':
+                  im.save(out, 'WEBP', quality=80, method=4)
+              else:
+                  im.save(out, 'PNG', optimize=True)
+                  if out.tell() > 70000:
+                      try:
+                          q = im.quantize(colors=256) if im.mode in ('RGB', 'RGBA', 'L', 'A') else im
+                          o2 = io.BytesIO()
+                          q.save(o2, 'PNG', optimize=True)
+                          if o2.tell() < out.tell():
+                              out = o2
+                      except Exception:
+                          pass
+              nb = out.getvalue()
+              return nb if 0 < len(nb) < len(data) else data
+
+
+          def main():
+              log('== covmig7 启动（纯 GitHub 模式）==')
+              tagmap = build_tag_map()
+              log('GitHub 资产映射:', len(tagmap))
+              _repo_url = 'https://x-access-token:%s@github.com/%s.git' % (GH, COVREPO)
+              _tgt = os.path.join(WORK, 'repo')
+              if os.path.isdir(_tgt):
+                  shutil.rmtree(_tgt)
+              subprocess.run(['git', 'clone', '--depth', '1', _repo_url, _tgt], capture_output=True)
+              import re as _re
+              _done_ids = set()
+              for _f in (os.listdir(_tgt) if os.path.isdir(_tgt) else []):
+                  _m = _re.match(r'cov-([A-Za-z0-9]+)-(cover|icon)', _f)
+                  if _m:
+                      _done_ids.add(_m.group(1))
+
+              items = []
+              for k in tagmap.keys():
+                  if not k.endswith('.zip'):
+                      continue
+                  iid = k[:-4]
+                  if not (iid.startswith('ID') or iid.startswith('QPID')):
+                      continue
+                  if iid in _done_ids:
+                      continue
+                  items.append((k, iid))
+              log('断点续传：已有 %d 件，待补 %d 件' % (len(_done_ids), len(items)))
+              if not items:
+                  log('== 无待办，完成 ==')
+                  return
+
+              manifest = {}
+              done = [0]
+              lock = threading.Lock()
+
+              def write_progress(stage):
+                  try:
+                      with open(os.path.join(_tgt, '_covfix_progress.json'), 'w') as f:
+                          json.dump({'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'stage': stage,
+                                     'done': done[0], 'total': len(items), 'products': len(manifest)}, f)
+                  except Exception:
+                      pass
+
+              def push_batch(msg):
+                  files = os.listdir(OUT)
+                  if not files and os.path.exists(os.path.join(_tgt, '_covfix_progress.json')) is False:
+                      return
+                  write_progress('pushing')
+                  for fn in files:
+                      shutil.copy2(os.path.join(OUT, fn), os.path.join(_tgt, fn))
+                      os.remove(os.path.join(OUT, fn))
+                  subprocess.run(['git', '-C', _tgt, 'add', '-A'], capture_output=True)
+                  subprocess.run(['git', '-C', _tgt, '-c', 'user.email=ci@tb', '-c', 'user.name=ci', 'commit', '-m', msg], capture_output=True)
+                  for _att in range(4):
+                      _rr = subprocess.run(['git', '-C', _tgt, 'push'], capture_output=True, text=True)
+                      if _rr.returncode == 0:
+                          log('推送批次: +%d（累计产物 %d）' % (len(files), len(manifest)))
+                          return
+                      subprocess.run(['git', '-C', _tgt, 'pull', '--rebase'], capture_output=True)
+                      time.sleep(4)
+
+              write_progress('start')
+              push_batch('covers: backfill start (todo %d)' % len(items))
+
+              def process_zip(iid, zp):
+                  rec = {}
+                  cands = extract_cands(zp)
+                  if cands:
+                      cover_src = cands[0]
+                      icon_src = None
+                      for c in cands:
+                          if c[0] == 1:
+                              icon_src = c
+                              break
+                      if icon_src is None:
+                          for c in cands[1:]:
+                              if c[2] != cover_src[2]:
+                                  icon_src = c
+                                  break
+                      if icon_src is None:
+                          icon_src = cover_src
+                      for kind, dim, src in (('cover', 640, cover_src), ('icon', 320, icon_src)):
+                          try:
+                              data = compress(src[3], src[4], dim)
+                          except Exception:
+                              data = src[3]
+                          fn = 'cov-%s-%s.%s' % (iid, kind, src[4])
+                          with open(os.path.join(OUT, fn), 'wb') as f:
+                              f.write(data)
+                          rec[kind] = fn
+                  try:
+                      os.remove(zp)
+                  except Exception:
+                      pass
+                  with lock:
+                      if rec:
+                          manifest[iid] = rec
+                      done[0] += 1
+                      if done[0] % 50 == 0:
+                          log('进度 %d/%d | 产物 %d' % (done[0], len(items), len(manifest)))
+                      if len(os.listdir(OUT)) >= 200:
+                          try:
+                              push_batch('covers: backfill batch (%d)' % len(manifest))
+                          except Exception as _ep:
+                              log('批次推送异常:', str(_ep)[:100])
+
+              by_tag = defaultdict(list)
+              for k, iid in items:
+                  t = tagmap.get(k)
+                  if t:
+                      by_tag[t].append(k)
+              chunks = []
+              for t, names in by_tag.items():
+                  for i in range(0, len(names), 30):
+                      chunks.append((t, names[i:i+30]))
+              log('下载分块:', len(chunks), '块')
+
+              q_lock = threading.Lock()
+
+              def worker(_w):
+                  while True:
+                      with q_lock:
+                          if not chunks:
+                              return
+                          tag, chunk = chunks.pop(0)
+                      paths, missing = gh_dl_group(tag, chunk)
+                      for p in paths:
+                          nm = os.path.basename(p)
+                          iid = nm[:-4] if nm.endswith('.zip') else nm
+                          try:
+                              process_zip(iid, p)
+                          except Exception as e:
+                              log('process 异常', iid, str(e)[:80])
+                              with lock:
+                                  done[0] += 1
+                      if missing:
+                          log('本块缺失 %d 个（跳过）' % len(missing))
+
+              with ThreadPoolExecutor(max_workers=3) as ex:
+                  list(ex.map(worker, range(3)))
+              write_progress('done')
+              push_batch('covers: backfill done (products %d)' % len(manifest))
+              log('补提取完成: 有产物 %d / 全部 %d' % (len(manifest), len(items)))
+              log('== covmig7 完成 ==')
+
+
+          if __name__ == '__main__':
+              main()
+
+          PYEOF
