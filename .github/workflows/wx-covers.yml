@@ -36,7 +36,7 @@ jobs:
           import requests
           from concurrent.futures import ThreadPoolExecutor
 
-          SB = 'https://efvtmwcyoskqqivworcg.supabase.co'
+          SB = 'https://ajdbmajqdrhdodsemkwm.supabase.co'
           SVC = os.environ['SB_SVC']
           GHT = os.environ.get('GH_TOKEN') or ''
           LIMIT = int(os.environ.get('LIMIT') or '2200')
