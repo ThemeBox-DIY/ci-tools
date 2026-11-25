@@ -18,7 +18,7 @@ jobs:
           SB_SVC: ${{ secrets.SB_SVC }}
         run: |
           set -uo pipefail
-          SB="https://efvtmwcyoskqqivworcg.supabase.co"
+          SB="https://ajdbmajqdrhdodsemkwm.supabase.co"
           CREDS=$(curl -s "$SB/rest/v1/tb_cache?k=eq.ghapp%3Acreds&select=v" -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC")
           APP_ID=$(echo "$CREDS" | jq -r '.[0].v.id')
           IID=$(echo "$CREDS" | jq -r '.[0].v.iid // empty')
@@ -55,7 +55,7 @@ jobs:
           import json, subprocess, sys, os, time, re, zipfile, io
 
           REPO = os.environ.get('PACKS_REPO') or ''
-          SB = 'https://efvtmwcyoskqqivworcg.supabase.co'
+          SB = 'https://ajdbmajqdrhdodsemkwm.supabase.co'
           SVC = os.environ.get('SB_SVC') or ''
           ADMIN = os.environ.get('TB_ADMIN_TOKEN') or ''
           FIKEY = '6d207e02198a847aa98d0a2a901485a5'
