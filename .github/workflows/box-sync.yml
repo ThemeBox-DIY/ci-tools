@@ -22,7 +22,7 @@ jobs:
           SB_SVC: ${{ secrets.SB_SVC }}
         run: |
           set -uo pipefail
-          SB="https://efvtmwcyoskqqivworcg.supabase.co"
+          SB="https://ajdbmajqdrhdodsemkwm.supabase.co"
           CREDS=$(curl -s "$SB/rest/v1/tb_cache?k=eq.ghapp%3Acreds&select=v" -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC")
           APP_ID=$(echo "$CREDS" | jq -r '.[0].v.id')
           IID=$(echo "$CREDS" | jq -r '.[0].v.iid // empty')
@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p boxwork && cd boxwork
-          SB="https://efvtmwcyoskqqivworcg.supabase.co"
+          SB="https://ajdbmajqdrhdodsemkwm.supabase.co"
           curl -sf "$SB/rest/v1/tb_cache?k=eq.boxpipe%3Aassets%3Av1&select=v" \
             -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC" -o assets.json
           python3 <<'PY'
