@@ -18,7 +18,7 @@ jobs:
           SB_SVC: ${{ secrets.SB_SVC }}
         run: |
           set -uo pipefail
-          SB="https://ajdbmajqdrhdodsemkwm.supabase.co"
+          SB="https://efvtmwcyoskqqivworcg.supabase.co"
           CREDS=$(curl -s "$SB/rest/v1/tb_cache?k=eq.ghapp%3Acreds&select=v" -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC")
           APP_ID=$(echo "$CREDS" | jq -r '.[0].v.id')
           IID=$(echo "$CREDS" | jq -r '.[0].v.iid // empty')
@@ -34,8 +34,14 @@ jobs:
           fi
           TOK=$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" "https://api.github.com/app/installations/$IID/access_tokens" | jq -r '.token')
           if [ -n "$TOK" ] && [ "$TOK" != "null" ]; then
-            echo "GH_TOKEN=$TOK" >> $GITHUB_ENV
-            echo "APP-TOKEN-OK"
+            REM=$(curl -s -H "Authorization: Bearer $TOK" -H "User-Agent: ci" -H "Accept: application/vnd.github+json" https://api.github.com/rate_limit | jq -r '.resources.core.remaining // 0')
+            if [ "${REM:-0}" -lt 300 ]; then
+              echo "GH_TOKEN=$FALLBACK_PAT" >> $GITHUB_ENV
+              echo "APP-TOKEN-FALLBACK-PAT-LOWQ(rem=$REM)"
+            else
+              echo "GH_TOKEN=$TOK" >> $GITHUB_ENV
+              echo "APP-TOKEN-OK rem=$REM"
+            fi
           else
             echo "GH_TOKEN=$FALLBACK_PAT" >> $GITHUB_ENV
             echo "APP-TOKEN-FALLBACK-PAT"
@@ -45,6 +51,7 @@ jobs:
           PACKS_REPO: ${{ secrets.PACKS_REPO }}
           SB_SVC: ${{ secrets.SB_SVC }}
           TB_ADMIN_TOKEN: ${{ secrets.TB_ADMIN_TOKEN }}
+          FALLBACK_PAT: ${{ secrets.PACKS_PAT }}
           PAYLOAD: ${{ github.event.inputs.payload }}
         run: |
           set -euo pipefail
@@ -55,7 +62,7 @@ jobs:
           import json, subprocess, sys, os, time, re, zipfile, io
 
           REPO = os.environ.get('PACKS_REPO') or ''
-          SB = 'https://ajdbmajqdrhdodsemkwm.supabase.co'
+          SB = 'https://efvtmwcyoskqqivworcg.supabase.co'
           SVC = os.environ.get('SB_SVC') or ''
           ADMIN = os.environ.get('TB_ADMIN_TOKEN') or ''
           FIKEY = '6d207e02198a847aa98d0a2a901485a5'
@@ -69,8 +76,23 @@ jobs:
           shipped_ids = []
           active = [0]
 
+          FALLBACK = os.environ.get('FALLBACK_PAT') or ''
+          _ENV = dict(os.environ)
+          def _rl_remaining():
+              r = subprocess.run(['gh','api','rate_limit','--jq','.resources.core.remaining'], capture_output=True, text=True)
+              try:
+                  return int((r.stdout or '').strip())
+              except Exception:
+                  return -1
+          _rm = _rl_remaining()
+          if 0 <= _rm < 300 and FALLBACK:
+              _ENV['GH_TOKEN'] = FALLBACK
+              print('TOKEN-SWITCH: PAT (app-rem=%d)' % _rm, flush=True)
+          else:
+              print('TOKEN-KEEP: rem=%s' % _rm, flush=True)
+
           def sh(cmd):
-              return subprocess.run(cmd, capture_output=True, text=True)
+              return subprocess.run(cmd, capture_output=True, text=True, env=_ENV)
 
           def curl_json(method, url, data=None, headers=None, timeout=120):
               cmd = ['curl', '-s', '-X', method, url, '-w', '\n%{http_code}', '--max-time', str(timeout)]
@@ -90,6 +112,7 @@ jobs:
           def discover():
               r = sh(['gh','release','list','--repo',REPO,'--limit','300'])
               if r.returncode != 0:
+                  print('DISCOVER-ERR: %s' % (((r.stderr or '') + (r.stdout or '')).strip()[:160]), flush=True)
                   return None
               best = 0
               for line in (r.stdout or '').splitlines():
@@ -115,9 +138,18 @@ jobs:
               r = sh(['gh','release','upload',tag,'dl/%s.zip'%pid,'--clobber','--repo',REPO])
               if r.returncode == 0:
                   return 'ok'
-              msg = ((r.stderr or '') + (r.stdout or '')).lower()
+              emsg = ((r.stderr or '') + (r.stdout or '')).strip()
+              print('UPERR[%s]: %s' % (tag, emsg[:200]), flush=True)
+              msg = emsg.lower()
               if 'file_count limited' in msg:
                   return 'full'
+              if FALLBACK and _ENV.get('GH_TOKEN') != FALLBACK and ('rate limit' in msg or 'secondary' in msg or '403' in msg or 'forbidden' in msg):
+                  _ENV['GH_TOKEN'] = FALLBACK
+                  print('UPRETRY-with-PAT', flush=True)
+                  r2 = sh(['gh','release','upload',tag,'dl/%s.zip'%pid,'--clobber','--repo',REPO])
+                  if r2.returncode == 0:
+                      return 'ok'
+                  print('UPERR2: %s' % ((((r2.stderr or '') + (r2.stdout or '')).strip())[:200]), flush=True)
               return 'err'
 
           def roll():
