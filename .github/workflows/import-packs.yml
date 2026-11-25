@@ -18,33 +18,39 @@ jobs:
           SB_SVC: ${{ secrets.SB_SVC }}
         run: |
           set -uo pipefail
-          SB="https://efvtmwcyoskqqivworcg.supabase.co"
-          CREDS=$(curl -s "$SB/rest/v1/tb_cache?k=eq.ghapp%3Acreds&select=v" -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC")
-          APP_ID=$(echo "$CREDS" | jq -r '.[0].v.id')
-          IID=$(echo "$CREDS" | jq -r '.[0].v.iid // empty')
-          echo "$CREDS" | jq -r '.[0].v.pem' > /tmp/app.pem 2>/dev/null || true
-          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
-          NOW=$(date +%s)
-          HDR=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
-          PAY=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((NOW-30)) $((NOW+540)) "$APP_ID" | b64url)
-          SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign /tmp/app.pem | b64url)
-          JWT="$HDR.$PAY.$SIG"
-          if [ -z "$IID" ] || [ "$IID" = "null" ]; then
-            IID=$(curl -s -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" https://api.github.com/app/installations | jq -r '.[0].id')
-          fi
-          TOK=$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" "https://api.github.com/app/installations/$IID/access_tokens" | jq -r '.token')
-          if [ -n "$TOK" ] && [ "$TOK" != "null" ]; then
-            REM=$(curl -s -H "Authorization: Bearer $TOK" -H "User-Agent: ci" -H "Accept: application/vnd.github+json" https://api.github.com/rate_limit | jq -r '.resources.core.remaining // 0')
-            if [ "${REM:-0}" -lt 300 ]; then
-              echo "GH_TOKEN=$FALLBACK_PAT" >> $GITHUB_ENV
-              echo "APP-TOKEN-FALLBACK-PAT-LOWQ(rem=$REM)"
-            else
-              echo "GH_TOKEN=$TOK" >> $GITHUB_ENV
-              echo "APP-TOKEN-OK rem=$REM"
+          SB="https://ajdbmajqdrhdodsemkwm.supabase.co"
+          TOK=""
+          CREDS=$(curl -s --max-time 30 "$SB/rest/v1/tb_cache?k=eq.ghapp%3Acreds&select=v" -H "apikey: $SB_SVC" -H "Authorization: Bearer $SB_SVC" 2>/dev/null || true)
+          APP_ID=$(printf '%s' "$CREDS" | jq -r 'if type=="array" and length>0 then (. [0].v.id // empty) else empty end' 2>/dev/null || true)
+          IID=$(printf '%s' "$CREDS" | jq -r 'if type=="array" and length>0 then (.[0].v.iid // empty) else empty end' 2>/dev/null || true)
+          printf '%s' "$CREDS" | jq -r 'if type=="array" and length>0 then .[0].v.pem else empty end' > /tmp/app.pem 2>/dev/null || true
+          if [ -n "$APP_ID" ] && [ -s /tmp/app.pem ]; then
+            b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+            NOW=$(date +%s)
+            HDR=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+            PAY=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((NOW-30)) $((NOW+540)) "$APP_ID" | b64url)
+            SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign /tmp/app.pem | b64url 2>/dev/null || true)
+            if [ -n "$SIG" ]; then
+              JWT="$HDR.$PAY.$SIG"
+              if [ -z "$IID" ] || [ "$IID" = "null" ]; then
+                IID=$(curl -s --max-time 30 -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" https://api.github.com/app/installations | jq -r 'if type=="array" and length>0 then .[0].id else empty end' 2>/dev/null || true)
+              fi
+              if [ -n "$IID" ] && [ "$IID" != "null" ]; then
+                TOK=$(curl -s --max-time 30 -X POST -H "Authorization: Bearer $JWT" -H "Accept: application/vnd.github+json" -H "User-Agent: ci" "https://api.github.com/app/installations/$IID/access_tokens" | jq -r '.token // empty' 2>/dev/null || true)
+              fi
             fi
+          fi
+          REM=""
+          if [ -n "$TOK" ] && [ "$TOK" != "null" ]; then
+            REM=$(curl -s --max-time 30 -H "Authorization: Bearer $TOK" -H "User-Agent: ci" -H "Accept: application/vnd.github+json" https://api.github.com/rate_limit | jq -r '.resources.core.remaining // 0' 2>/dev/null || true)
+          fi
+          case "$REM" in ''|*[!0-9]*) REM=0;; esac
+          if [ -n "$TOK" ] && [ "$TOK" != "null" ] && [ "$REM" -ge 300 ]; then
+            echo "GH_TOKEN=$TOK" >> $GITHUB_ENV
+            echo "APP-TOKEN-OK rem=$REM"
           else
             echo "GH_TOKEN=$FALLBACK_PAT" >> $GITHUB_ENV
-            echo "APP-TOKEN-FALLBACK-PAT"
+            echo "APP-TOKEN-FALLBACK-PAT tok=${TOK:+set} rem=$REM"
           fi
       - name: Transfer
         env:
@@ -62,7 +68,7 @@ jobs:
           import json, subprocess, sys, os, time, re, zipfile, io
 
           REPO = os.environ.get('PACKS_REPO') or ''
-          SB = 'https://efvtmwcyoskqqivworcg.supabase.co'
+          SB = 'https://ajdbmajqdrhdodsemkwm.supabase.co'
           SVC = os.environ.get('SB_SVC') or ''
           ADMIN = os.environ.get('TB_ADMIN_TOKEN') or ''
           FIKEY = '6d207e02198a847aa98d0a2a901485a5'
