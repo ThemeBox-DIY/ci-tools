@@ -262,6 +262,71 @@ jobs:
                   time.sleep(2 * (att + 1))
               return ''
 
+          # v5(微信直链): 直接上传公众号素材 → mmbiz 直链写库；仓库归档降级为 best-effort 备份
+          WX_WORKER = 'https://floral-queen-7e7a.clp1015.workers.dev'
+          _wxtok = {'v': '', 'at': 0.0}
+
+          def wx_token(force=False):
+              if not force and _wxtok['v'] and time.time() - _wxtok['at'] < 5400:
+                  return _wxtok['v']
+              for att in range(4):
+                  r = sh(['curl','-s','--max-time','40','-A','Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)', WX_WORKER])
+                  try:
+                      j = json.loads(r.stdout or '{}')
+                      if j.get('access_token'):
+                          _wxtok['v'] = j['access_token']
+                          _wxtok['at'] = time.time()
+                          print('WX-TOKEN ok (%d chars)' % len(_wxtok['v']), flush=True)
+                          return _wxtok['v']
+                  except Exception:
+                      pass
+                  time.sleep(3)
+              print('WX-TOKEN-FAIL', flush=True)
+              return ''
+
+          def upload_wx(data, ext, obj_name):
+              # 直传公众号素材：uploadimg → 失败/限流时 add_material 兜底 → 返回 https mmbiz 直链
+              data = compress_img(data, ext, 320 if '-icon.' in obj_name else 640)
+              if ext == 'webp':
+                  try:
+                      from PIL import Image
+                      im = Image.open(io.BytesIO(data))
+                      o = io.BytesIO()
+                      im.save(o, 'PNG')
+                      data = o.getvalue()
+                      ext = 'png'
+                  except Exception:
+                      pass
+              tmp = 'dl/wx-' + obj_name.replace('/', '_')
+              try:
+                  open(tmp, 'wb').write(data)
+              except Exception:
+                  return ''
+              mime = 'image/jpeg' if ext == 'jpg' else 'image/png'
+              for ch in ('uploadimg', 'add_material'):
+                  for att in range(3):
+                      tok = wx_token(force=(att > 0))
+                      if not tok:
+                          time.sleep(3)
+                          continue
+                      if ch == 'uploadimg':
+                          ep = 'https://api.weixin.qq.com/cgi-bin/media/uploadimg?access_token=' + tok
+                      else:
+                          ep = 'https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=' + tok + '&type=image'
+                      r = sh(['curl','-s','--max-time','60','-X','POST', ep, '-F', 'media=@%s;type=%s' % (tmp, mime)])
+                      try:
+                          j = json.loads(r.stdout or '{}')
+                      except Exception:
+                          j = {}
+                      u = j.get('url') or ''
+                      if u:
+                          return u.replace('http://', 'https://')
+                      if j.get('errcode') in (40001, 42001):
+                          _wxtok['v'] = ''
+                          continue
+                      time.sleep(2)
+              return ''
+
           def patch_row(pid, kind, cover_url, icon_url):
               if kind == 'bubble':
                   url = SB + '/rest/v1/tb_bubbles?bubble_id=eq.' + pid
@@ -316,8 +381,20 @@ jobs:
                       ico = extract_img('dl/%s.zip' % pid, 'icon')
                       if not cov and not ico:
                           raise RuntimeError('nocover')
-                      cov_url = upload_cover(pid + '-cover', cov[0], cov[1], 'cov-' + pid + '-cover.' + cov[1]) if cov else ''
-                      ico_url = upload_cover(pid + '-icon', ico[0], ico[1], 'cov-' + pid + '-icon.' + ico[1]) if ico else ''
+                      # v5: 微信素材直链优先；仓库归档 best-effort；微信全失败才兜底 jsdelivr（夜间任务再迁）
+                      cov_url = upload_wx(cov[0], cov[1], 'cov-' + pid + '-cover.' + cov[1]) if cov else ''
+                      ico_url = upload_wx(ico[0], ico[1], 'cov-' + pid + '-icon.' + ico[1]) if ico else ''
+                      if cov_url or ico_url:
+                          try:
+                              if cov:
+                                  upload_cover(pid + '-cover', cov[0], cov[1], 'cov-' + pid + '-cover.' + cov[1])
+                              if ico:
+                                  upload_cover(pid + '-icon', ico[0], ico[1], 'cov-' + pid + '-icon.' + ico[1])
+                          except Exception:
+                              pass
+                      else:
+                          cov_url = upload_cover(pid + '-cover', cov[0], cov[1], 'cov-' + pid + '-cover.' + cov[1]) if cov else ''
+                          ico_url = upload_cover(pid + '-icon', ico[0], ico[1], 'cov-' + pid + '-icon.' + ico[1]) if ico else ''
                       if not cov_url and not ico_url:
                           raise RuntimeError('cover-up-fail')
                       final_cover = cov_url or ico_url
