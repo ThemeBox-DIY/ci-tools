@@ -1,0 +1,14 @@
+name: conn-check
+on: workflow_dispatch
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - name: curl checks
+        run: |
+          for u in "https://tb-api-gw01-prd.themebox.ccwu.cc/functions/v1/tb-api/blank" "https://mon.themebox.ccwu.cc/" "https://dl.themebox.ccwu.cc/"; do
+            c=$(curl -s -o /dev/null -w "%{http_code}" -m 15 "$u" || echo ERR)
+            echo "$c <= $u"
+          done
+          echo "--- verbose:"
+          curl -sv -m 15 https://tb-api-gw01-prd.themebox.ccwu.cc/functions/v1/tb-api/blank 2>&1 | tail -20
